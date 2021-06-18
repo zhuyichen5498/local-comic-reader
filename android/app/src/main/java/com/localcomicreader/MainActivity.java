@@ -1,4 +1,4 @@
-package com.awesomeproject;
+package com.localcomicreader;
 
 import com.facebook.react.ReactActivity;
 import android.content.Intent;
@@ -12,7 +12,7 @@ public class MainActivity extends ReactActivity {
    */
   @Override
   protected String getMainComponentName() {
-    return "AwesomeProject";
+    return "LocalComicReader";
   }
 
   @Override

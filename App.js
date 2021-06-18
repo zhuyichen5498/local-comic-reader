@@ -19,7 +19,9 @@ import {
   Modal,
   PermissionsAndroid,
   BackHandler,
-  DeviceEventEmitter
+  DeviceEventEmitter,
+  ToastAndroid,
+  PanResponder
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, CardStyleInterpolators, HeaderBackButton } from '@react-navigation/stack';
@@ -29,6 +31,7 @@ import Orientation from 'react-native-orientation-locker';
 const { width, height } = Dimensions.get("window");
 const statusBarHeight = StatusBar.currentHeight;
 const headerHeight = 56;
+const pageSize = 20;
 
 class Book extends Component {
   constructor(props) {
@@ -69,6 +72,7 @@ class Book extends Component {
                   height: Math.floor(width * 1.4)
                 }}
                 resizeMode={"cover"}
+                resizeMethod={"resize"}
                 onError={() => this.setState({ showDefault: true })}
               >
                 {
@@ -105,6 +109,7 @@ class HomeScreen extends Component {
       fileList: [],
       deleteMode: false,
       deleteBookList: [],
+      lastDir: ""
     };
     const { navigation } = this.props;
     navigation.setOptions({
@@ -133,6 +138,11 @@ class HomeScreen extends Component {
       this.refreshSubScription = DeviceEventEmitter.addListener('refresh', () => {
         this.getBookList();
       });
+      const isLastDirFileExist = await RNFS.exists(`${RNFS.DocumentDirectoryPath}/last.dir`);
+      if (!isLastDirFileExist) {
+        await RNFS.write(`${RNFS.DocumentDirectoryPath}/last.dir`, RNFS.ExternalStorageDirectoryPath, 0);
+      }
+      this.getLastDir();
     } catch (error) {
       alert(err)
     }
@@ -168,14 +178,20 @@ class HomeScreen extends Component {
     }).catch(() => { });
   }
 
+  getLastDir() {
+    RNFS.readFile(`${RNFS.DocumentDirectoryPath}/last.dir`).then(res => {
+      this.setState({ lastDir: res });
+    }).catch(() => { });
+  }
+
   importFile() {
-    this.enterDir(RNFS.ExternalStorageDirectoryPath, true);
+    this.enterDir(this.state.lastDir, true);
   }
 
   enterDir(path, firstFlag, backFlag) {
     let pathName = '';
     if (firstFlag) {
-      pathName = '主目录';
+      pathName = `主目录${path.substring(RNFS.ExternalStorageDirectoryPath.length)}`;
     } else if (backFlag) {
       path = this.state.path.substring(0, this.state.path.lastIndexOf('/'));
       pathName = this.state.pathName.substring(0, this.state.pathName.lastIndexOf('/'));
@@ -183,6 +199,11 @@ class HomeScreen extends Component {
       pathName = `${this.state.pathName}/${path}`;
       path = `${this.state.path}/${path}`;
     }
+    RNFS.unlink(`${RNFS.DocumentDirectoryPath}/last.dir`).then(() => {
+      RNFS.writeFile(`${RNFS.DocumentDirectoryPath}/last.dir`, path).then(() => {
+        this.setState({ lastDir: path });
+      }).catch(() => { });
+    }).catch(() => { });
     RNFS.readDir(path).then(res => {
       this.setState({
         modalVisible: true,
@@ -232,6 +253,12 @@ class HomeScreen extends Component {
         }).catch(() => { });
       }).catch(() => { });
     }
+  }
+
+  cancel() {
+    this.setState({
+      modalVisible: false
+    });
   }
 
   finish() {
@@ -394,8 +421,11 @@ class HomeScreen extends Component {
                 </View>
               </TouchableWithoutFeedback>
               <Text numberOfLines={1} style={{ flex: 1, fontSize: 20, lineHeight: 24, color: '#fff' }}>{this.state.pathName}</Text>
+              <TouchableWithoutFeedback onPress={() => { this.cancel() }}>
+                <Text style={{ paddingLeft: 10, paddingRight: 10, fontSize: 20, color: '#fff' }}>取消</Text>
+              </TouchableWithoutFeedback>
               <TouchableWithoutFeedback onPress={() => { this.finish() }}>
-                <Text style={{ paddingLeft: 20, paddingRight: 20, fontSize: 20, color: '#fff' }}>完成</Text>
+                <Text style={{ marginRight: 10, paddingLeft: 10, paddingRight: 10, fontSize: 20, color: '#fff' }}>完成</Text>
               </TouchableWithoutFeedback>
             </View>
             <View style={{ flex: 1, backgroundColor: '#eee' }}>
@@ -456,9 +486,14 @@ class DetailsScreen extends Component {
   constructor(props) {
     super(props);
     this.state = {
+      allPic: [],
       picList: [],
       orientation: Orientation.getInitialOrientation(),
-      scrollView: null
+      scrollView: null,
+      showProgress: false,
+      index: 0,
+      percent: 0,
+      maxWidth: 0
     };
     const { navigation, route } = this.props;
     const { path } = route.params;
@@ -476,34 +511,61 @@ class DetailsScreen extends Component {
     });
   }
 
+  panResponder = PanResponder.create({
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderMove: (e, gestureState) => {
+      let percent = Math.min(this.state.maxWidth, Math.max(0, gestureState.moveX - 20)) / this.state.maxWidth;
+      this.setState({ percent }, () => {
+        let index = Math.floor(percent * this.state.allPic.length);
+        this.setIndex(index);
+      });
+    },
+  });
+
+  setIndex(index) {
+    let i = this.state.picList.findIndex(pic => pic.index == index);
+    if (i > -1) {
+      this.state.scrollView.scrollTo({ x: 0, y: this.state.picList.slice(0, i).reduce((total, pic) => total + pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width), 0), animate: true });
+    } else if (index < this.state.picList[0].index) {
+      this.loadPage(2).then(() => {
+        this.setIndex(index);
+      });
+    } else if (index > this.state.picList[this.state.picList.length - 1].index) {
+      this.loadPage(3).then(() => {
+        this.setIndex(index);
+      });
+    }
+  }
+
+  _onLayout(event) {
+    this.setState({ maxWidth: event.nativeEvent.layout.width });
+  }
+
   _onOrientationDidChange = (orientation) => {
-    this.setState({ orientation });
+    this.setState({ orientation }, () => {
+      let i = this.state.picList.findIndex(pic => pic.index == this.state.index);
+      this.state.scrollView.scrollTo({ x: 0, y: this.state.picList.slice(0, i).reduce((total, pic) => total + pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width), 0), animate: false });
+    });
   };
 
   componentDidMount() {
     Orientation.lockToPortrait();
     Orientation.addOrientationListener(this._onOrientationDidChange);
-    const { path, bookmark } = this.props.route.params;
+    const { path } = this.props.route.params;
     RNFS.readDir(path).then(res => {
       const picList = res.filter(v => v.isFile() && v.name.lastIndexOf('.') > -1 && ['png', 'jpg', 'jpeg', 'gif', 'jfif'].includes(v.name.substring(v.name.lastIndexOf('.') + 1)));
       picList.sort((a, b) => (a.name.substring(0, a.name.lastIndexOf('.')).replace(/^.*?(\d+)$/, '$1') - 0) - (b.name.substring(0, b.name.lastIndexOf('.')).replace(/^.*?(\d+)$/, '$1') - 0));
-      Promise.all(picList.map(pic => this.getImageSize(`file:///${pic.path}`))).then(res => {
-        this.setState({
-          picList: picList.map((pic, i) => {
-            return {
-              index: i,
-              name: pic.name,
-              url: pic.path,
-              height: res[i]
-            }
-          }),
-        }, () => {
-          const index = picList.findIndex(pic => pic.name === bookmark);
-          if (index > -1) {
-            this.state.scrollView.scrollTo({ x: 0, y: res.slice(0, index).reduce((total, height) => total + height, 0), animate: true });
+      this.setState({
+        allPic: picList.map((pic, i) => {
+          return {
+            index: i,
+            name: pic.name,
+            url: pic.path
           }
-        });
-      }).catch((err) => { alert(err) });
+        }),
+      }, () => {
+        this.loadPage(1);
+      });
     }).catch((error) => {
       alert(error)
     });
@@ -511,6 +573,73 @@ class DetailsScreen extends Component {
       "hardwareBackPress",
       this.backAction
     );
+  }
+
+  toast(text) {
+    ToastAndroid.showWithGravity(
+      text,
+      ToastAndroid.SHORT,
+      ToastAndroid.CENTER
+    );
+  }
+
+  // type: 1初始化，2加载上一页，3加载下一页
+  loadPage(type) {
+    return new Promise(resolve => {
+      const { bookmark } = this.props.route.params;
+      let pageNum = 0;
+      switch (type) {
+        case 1:
+          const index = this.state.allPic.findIndex(pic => pic.name === bookmark);
+          pageNum = Math.floor(index / pageSize);
+          break;
+        case 2:
+          if (this.state.picList[0].index == 0) {
+            this.toast("已经到第一页了！");
+            return;
+          }
+          pageNum = (this.state.picList[0].index / pageSize) - 1;
+          break;
+        case 3:
+          if (this.state.picList[this.state.picList.length - 1].index == this.state.allPic.length - 1) {
+            this.toast("已经到最后一页了！");
+            return;
+          }
+          pageNum = (this.state.picList[this.state.picList.length - 1].index + 1) / pageSize;
+          break;
+      }
+      let newPicList = this.state.allPic.slice(pageSize * pageNum, pageSize * (pageNum + 1));
+      Promise.all(newPicList.map(pic => this.getImageSize(`file:///${pic.url}`))).then(res => {
+        let picList = newPicList.map((pic, i) => {
+          return {
+            ...pic,
+            height: res[i]
+          }
+        });
+        if (type == 2) {
+          picList = picList.concat(this.state.picList);
+        } else if (type == 3) {
+          picList = this.state.picList.concat(picList);
+        }
+        this.setState({ picList }, () => {
+          let index = 0;
+          if (type == 1) {
+            let i = this.state.picList.findIndex(pic => pic.name === bookmark);
+            if (i > -1) {
+              index = i;
+              this.state.scrollView.scrollTo({ x: 0, y: res.slice(0, i).reduce((total, height) => total + height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width), 0), animate: true });
+            }
+            this.setState({ index, percent: (index + 1) / this.state.allPic.length });
+          } else {
+            if (type == 2) {
+              let i = this.state.picList.findIndex(pic => pic.index == this.state.index);
+              this.state.scrollView.scrollTo({ x: 0, y: this.state.picList.slice(0, i).reduce((total, pic) => total + pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width), 0), animate: false });
+            }
+            resolve();
+          }
+        });
+      }).catch((err) => { alert(err) });
+    })
   }
 
   componentWillUnmount() {
@@ -547,12 +676,40 @@ class DetailsScreen extends Component {
     });
   }
 
+  onScroll(event) {
+    let y = event.nativeEvent.contentOffset.y;
+    let layoutHeight = event.nativeEvent.layoutMeasurement.height;
+    let contentHeight = event.nativeEvent.contentSize.height;
+    let total = 0;
+    let index = 0;
+    let bookmark = '';
+    this.state.picList.some(pic => {
+      total += pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width);
+      if (total > y) {
+        index = pic.index;
+        bookmark = pic.name;
+        return true;
+      }
+    })
+    if (this.state.showProgress) {
+      this.setState({ index });
+      this.saveBookMark(bookmark);
+    } else {
+      this.setState({ index, percent: (index + 1) / this.state.allPic.length });
+      if (y == 0) {
+        this.loadPage(2);
+      } else if (y + layoutHeight == contentHeight) {
+        this.loadPage(3);
+      }
+    }
+  }
+
   onMomentumScrollEnd(y) {
     let total = 0;
     let bookmark = '';
     this.state.picList.some(pic => {
-      total += pic.height;
-      if (total >= y) {
+      total += pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width);
+      if (total > y) {
         bookmark = pic.name;
         return true;
       }
@@ -566,7 +723,7 @@ class DetailsScreen extends Component {
       const bookIndex = bookList.findIndex(book => book[2] === `path:${this.props.route.params.path}`);
       const book = [
         `bookname:${this.props.route.params.path.split('/').pop()}`,
-        `preview:${this.state.picList[0].name}`,
+        `preview:${this.state.allPic[0].name}`,
         `path:${this.props.route.params.path}`,
         `bookmark:${bookmark}`,
       ];
@@ -580,21 +737,42 @@ class DetailsScreen extends Component {
   render() {
     return (
       <View style={{ flex: 1 }}>
-        <ScrollView ref={scrollView => this.setState({ scrollView })} onMomentumScrollEnd={event => this.onMomentumScrollEnd(event.nativeEvent.contentOffset.y)}>
-          <View style={{ flex: 1 }}>
-            {this.state.picList.map(pic =>
-              <Image
-                key={pic.url}
-                source={{ uri: `file:///${pic.url}` }}
-                style={{
-                  width: this.state.orientation == 'PORTRAIT' ? width : height,
-                  height: pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width)
-                }}
-                resizeMode={"cover"}
-              />
-            )}
-          </View>
-        </ScrollView>
+        <View style={{ flex: 1 }}>
+          <ScrollView ref={scrollView => this.setState({ scrollView })} onScroll={event => this.onScroll(event)} onMomentumScrollEnd={event => this.onMomentumScrollEnd(event.nativeEvent.contentOffset.y)}>
+            <View style={{ flex: 1 }}>
+              {this.state.picList.map(pic =>
+                <TouchableWithoutFeedback key={pic.url} onPress={() => this.setState({ showProgress: true })}>
+                  <Image
+                    source={{ uri: `file:///${pic.url}` }}
+                    style={{
+                      width: this.state.orientation == 'PORTRAIT' ? width : height,
+                      height: pic.height * (this.state.orientation == 'PORTRAIT' ? 1 : height / width)
+                    }}
+                    resizeMode={"cover"}
+                    resizeMethod={"resize"}
+                  />
+                </TouchableWithoutFeedback>
+              )}
+            </View>
+          </ScrollView>
+        </View>
+        {
+          this.state.showProgress ? (
+            <>
+              <TouchableWithoutFeedback onPress={() => this.setState({ showProgress: false })}>
+                <View style={{ position: 'absolute', zIndex: 1, top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0, 0, 0, 0.2)' }}>
+                </View>
+              </TouchableWithoutFeedback>
+              <View style={{ position: 'absolute', zIndex: 2, right: 0, bottom: 0, left: 0, height: 50, paddingLeft: 20, paddingRight: 20, backgroundColor: 'rgba(0, 0, 0, 0.8)', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View {...this.panResponder.panHandlers} style={{ flex: 1, height: 2, padding: 10, marginRight: 20, flexDirection: 'row' }}>
+                  <View style={{ flex: 1, height: 2, backgroundColor: 'white' }} onLayout={(e) => { this._onLayout(e) }}></View>
+                  <View style={{ position: 'absolute', width: 20, height: 20, top: 0, left: this.state.percent * this.state.maxWidth, borderRadius: 20, backgroundColor: 'white' }}></View>
+                </View>
+                <Text style={{ fontSize: 18, color: 'white' }}>{this.state.index + 1}/{this.state.allPic.length}</Text>
+              </View>
+            </>
+          ) : null
+        }
       </View>
     );
   }
