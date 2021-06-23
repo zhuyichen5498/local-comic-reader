@@ -21,7 +21,7 @@ import {
   BackHandler,
   DeviceEventEmitter,
   ToastAndroid,
-  PanResponder
+  PanResponder,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, CardStyleInterpolators, HeaderBackButton } from '@react-navigation/stack';
@@ -515,10 +515,11 @@ class DetailsScreen extends Component {
     onMoveShouldSetPanResponder: () => true,
     onPanResponderMove: (e, gestureState) => {
       let percent = Math.min(this.state.maxWidth, Math.max(0, gestureState.moveX - 20)) / this.state.maxWidth;
-      this.setState({ percent }, () => {
-        let index = Math.floor(percent * this.state.allPic.length);
-        this.setIndex(index);
-      });
+      this.setState({ percent });
+    },
+    onPanResponderRelease: () => {
+      let index = Math.floor(this.state.percent * this.state.allPic.length);
+      this.setIndex(index);
     },
   });
 
@@ -738,7 +739,7 @@ class DetailsScreen extends Component {
     return (
       <View style={{ flex: 1 }}>
         <View style={{ flex: 1 }}>
-          <ScrollView ref={scrollView => this.setState({ scrollView })} onScroll={event => this.onScroll(event)} onMomentumScrollEnd={event => this.onMomentumScrollEnd(event.nativeEvent.contentOffset.y)}>
+          <ScrollView ref={scrollView => this.setState({ scrollView })} removeClippedSubviews={true} onScroll={event => this.onScroll(event)} onMomentumScrollEnd={event => this.onMomentumScrollEnd(event.nativeEvent.contentOffset.y)}>
             <View style={{ flex: 1 }}>
               {this.state.picList.map(pic =>
                 <TouchableWithoutFeedback key={pic.url} onPress={() => this.setState({ showProgress: true })}>
